@@ -181,6 +181,10 @@ class TexParser:
 
     def clean_latex(self, text: str) -> str:
         """Remove LaTeX commands and cleanup text."""
+        # Replace line breaks with space
+        text = re.sub(r'\s*\\\\\s*', ' ', text)
+        # Remove \thanks{...} content
+        text = re.sub(r'\\thanks{[^}]*}', '', text)
         # Remove common LaTeX formatting commands
         text = re.sub(r'\\[a-zA-Z]+{([^}]*)}', r'\1', text)
         text = re.sub(r'\\[a-zA-Z]+', '', text)
@@ -228,9 +232,6 @@ class TexParser:
         
         # Clean the extracted caption
         caption_text = caption_text.strip()
-        
-        # Remove any remaining LaTeX commands (optional, depending on your needs)
-        caption_text = re.sub(r'\\[a-zA-Z]+\s*{([^}]*)}', r'\1', caption_text)
         
         return self.clean_latex(caption_text)
 
@@ -430,7 +431,7 @@ class TexParser:
 
 def main():
     # Example usage
-    directory_path = "arXiv-2105.06400v1"
+    directory_path = "arXiv-1807.05209v1"
     parser = TexParser(directory_path)
     df = parser.process()
     
