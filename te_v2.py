@@ -34,51 +34,6 @@ def clean_tex_comments(content: str) -> str:
     
     return content.strip()
 
-def extract_bracketed_content(content: str, depth: int = 1) -> str:
-    """
-    Extract content within nested curly braces, handling nested braces properly.
-    depth parameter determines how many levels of nested braces to process.
-    """
-    result = []
-    brace_count = 0
-    current_char_idx = 0
-    
-    while current_char_idx < len(content):
-        char = content[current_char_idx]
-        
-        if char == '{':
-            brace_count += 1
-            if brace_count == 1:
-                # Start of content we want to capture
-                current_char_idx += 1
-                continue
-        elif char == '}':
-            brace_count -= 1
-            if brace_count == 0:
-                break
-        
-        if brace_count >= 1:
-            result.append(char)
-        
-        current_char_idx += 1
-    
-    extracted = ''.join(result)
-    
-    # If we need to process more levels of nesting
-    if depth > 1 and '{' in extracted:
-        # Process each nested brace group
-        parts = []
-        last_end = 0
-        for match in re.finditer(r'{([^{}]*)}', extracted):
-            parts.append(extracted[last_end:match.start()])
-            nested_content = extract_bracketed_content(match.group(1), depth - 1)
-            parts.append(nested_content)
-            last_end = match.end()
-        parts.append(extracted[last_end:])
-        extracted = ''.join(parts)
-    
-    return extracted
-
 class TexParser:
     def __init__(self, directory_path: str):
         self.directory = Path(directory_path)
@@ -86,6 +41,7 @@ class TexParser:
         self.main_file_content = ""
         self.processed_files = set()
         self.section_positions = []
+        self.latex_commands = {}
         
     def find_main_tex_file(self) -> Optional[Path]:
         """Find the main tex file in the directory."""
@@ -129,7 +85,7 @@ class TexParser:
                 try:
                     self.processed_files.add(resolved_path)
                     with open(resolved_path, 'r', encoding='utf-8') as f:
-                        included_content = f.read()
+                        included_content = clean_tex_comments(f.read())
                         # Add a comment to mark the source file
                         marker = f"\n% BEGIN_INCLUDE_FROM: {resolved_path}\n"
                         end_marker = f"\n% END_INCLUDE_FROM: {resolved_path}\n"
@@ -150,14 +106,27 @@ class TexParser:
         cleaned_content = clean_tex_comments(self.main_file_content)
         
         # Extract title
-        title_match = re.search(r'\\title\s*{', cleaned_content)
+        title_match = re.search(r'\\[a-zA-Z]*title\s*{', cleaned_content)
         if title_match:
             start_pos = title_match.end() - 1  # include the opening brace
-            paper_title = self.clean_latex(extract_bracketed_content(cleaned_content[start_pos:]))
+            paper_title = self.post_process_latex_content(cleaned_content[start_pos:])
         else:
             paper_title = "Unknown Title"
             
         return paper_title
+
+    def extract_latex_commands(self, content: str) -> dict:
+        """Extract LaTeX command definitions into a dictionary."""
+        commands = {}
+        # Match commands with optional arguments and handle no-argument commands
+        command_pattern = r'\\(?:newcommand|def|renewcommand){\\([^}]+)}(?:\[[\d]*\])?\s*{([^}]+)}'
+        
+        for match in re.finditer(command_pattern, content):
+            command_name = match.group(1)
+            command_value = match.group(2)
+            commands[command_name] = self.post_process_latex_content(command_value)
+        
+        return commands
 
     def build_section_cache(self):
         """
@@ -172,12 +141,63 @@ class TexParser:
         for match in matched_sections:
             position = match.start()
             section_type = match.group(1)  # Will be either "section" or "subsection"
-            section_name = self.clean_latex(extract_bracketed_content(self.main_file_content[match.end() - 1:]))
+            section_name = self.post_process_latex_content(self.main_file_content[match.end() - 1:])
             self.section_positions.append((position, section_type, section_name))
         
         # Sort by position
         # print(self.section_positions)
         self.section_positions.sort()
+
+    def extract_bracketed_content(self, content: str, depth: int = 1) -> str:
+        """
+        Extract content within nested curly braces, handling nested braces properly.
+        depth parameter determines how many levels of nested braces to process.
+        """
+        result = []
+        brace_count = 0
+        current_char_idx = 0
+        
+        while current_char_idx < len(content):
+            char = content[current_char_idx]
+            
+            if char == '{':
+                brace_count += 1
+                if brace_count == 1:
+                    # Start of content we want to capture
+                    current_char_idx += 1
+                    continue
+            elif char == '}':
+                brace_count -= 1
+                if brace_count == 0:
+                    break
+            
+            if brace_count >= 1:
+                result.append(char)
+            
+            current_char_idx += 1
+        
+        extracted = ''.join(result)
+        
+        # If we need to process more levels of nesting
+        if depth > 1 and '{' in extracted:
+            # Process each nested brace group
+            parts = []
+            last_end = 0
+            for match in re.finditer(r'{([^{}]*)}', extracted):
+                parts.append(extracted[last_end:match.start()])
+                nested_content = self.extract_bracketed_content(match.group(1), depth - 1)
+                parts.append(nested_content)
+                last_end = match.end()
+            parts.append(extracted[last_end:])
+            extracted = ''.join(parts)
+        
+        return extracted
+
+    def post_process_latex_content(self, content: str) -> str:
+        content = self.extract_bracketed_content(content)
+        content = content.strip()
+        content = self.resolve_commands(content, self.latex_commands)
+        return self.clean_latex(content)
 
     def clean_latex(self, text: str) -> str:
         """Remove LaTeX commands and cleanup text."""
@@ -212,6 +232,13 @@ class TexParser:
                 current_subsection = name
                 
         return current_section, current_subsection
+    
+    def resolve_commands(self, text: str, commands: dict) -> str:
+        """Replace command references with their values."""
+        # Replace each command reference with its value
+        for cmd, value in commands.items():
+            text = text.replace(f"\\{cmd}", value)
+        return text
 
     def extract_caption(self, table_content: str) -> Optional[str]:
         """
@@ -228,12 +255,7 @@ class TexParser:
         
         # Extract content within caption braces, handling nested braces
         start_pos = caption_match.end() - 1  # include the opening brace
-        caption_text = extract_bracketed_content(cleaned_content[start_pos:])
-        
-        # Clean the extracted caption
-        caption_text = caption_text.strip()
-        
-        return self.clean_latex(caption_text)
+        return self.post_process_latex_content(cleaned_content[start_pos:])
 
     def analyze_table_content(self, table_content: str):
         """Analyze table content to extract structural and content information."""
@@ -392,7 +414,7 @@ class TexParser:
             self.processed_files.add(main_file)
             content = clean_tex_comments(content)
             self.main_file_content = self.expand_includes(content, main_file)
-            # Clean the content
+            self.latex_commands = self.extract_latex_commands(self.main_file_content)
         
         # Extract tables
         tables = self.extract_tables()
@@ -431,7 +453,7 @@ class TexParser:
 
 def main():
     # Example usage
-    directory_path = "arXiv-1807.05209v1"
+    directory_path = "arxiv_sources/2411.09473"  # Example directory with extracted
     parser = TexParser(directory_path)
     df = parser.process()
     
