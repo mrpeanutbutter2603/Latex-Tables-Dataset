@@ -1,6 +1,7 @@
 import os
 import re
 from pathlib import Path
+from table_renderer import TableRenderer
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Set
 import pandas as pd
@@ -42,6 +43,16 @@ class TexParser:
         self.processed_files = set()
         self.section_positions = []
         self.latex_commands = {}
+        
+        # Create output directory with proper permissions
+        self.output_dir = self.directory / "rendered_tables"
+        try:
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+            os.chmod(self.output_dir, 0o755)
+        except Exception as e:
+            print(f"Warning: Failed to create output directory: {e}")
+        
+        self.renderer = TableRenderer()
         
     def find_main_tex_file(self) -> Optional[Path]:
         """Find the main tex file in the directory."""
@@ -418,9 +429,43 @@ class TexParser:
         
         # Extract tables
         tables = self.extract_tables()
+
+        df_data = []
+        for i, table in enumerate(tables):
+            output_path = str(self.output_dir / f"table_{i}.png")
+            rendered = self.renderer.process_table(table.content, output_path)
+
+            print(f"table paper_id: {table.paper_id}")
+            print(f"table paper_title: {table.paper_title}")
+            print(f"table section: {table.section}")
+            print(f"table subsection: {table.subsection}")
+            print(f"table caption: {table.caption}")
+            print(f"table source_file: {table.source_file}")
+            print(f"table max_cols: {table.max_cols}")
+            print(f"table max_rows: {table.max_rows}")
+            print(f"table cell_types: {table.cell_types}")
+            print("-" * 50)
+
+            df_data.append({
+                'paper_id': table.paper_id,
+                'paper_title': table.paper_title,
+                'section': table.section,
+                'subsection': table.subsection,
+                'table_content': table.content,
+                'cleaned_content': rendered.cleaned_content,
+                'caption': table.caption,
+                'source_file': table.source_file,
+                'max_cols': table.max_cols,
+                'max_rows': table.max_rows,
+                'cell_types': table.cell_types,
+                'png_path': rendered.png_path,
+                'render_success': rendered.render_success
+            })
         
+        return pd.DataFrame(df_data)
+            
         # Print table information
-        for table in tables:
+        """for table in tables:
             print(f"table paper_id: {table.paper_id}")
             print(f"table paper_title: {table.paper_title}")
             print(f"table section: {table.section}")
@@ -449,11 +494,11 @@ class TexParser:
             for table in tables
         ])
         
-        return df
+        return df"""
 
 def main():
     # Example usage
-    directory_path = "arxiv_sources/2411.09473"  # Example directory with extracted
+    directory_path = "arXiv-1709.02349v2"  # Example directory with extracted
     parser = TexParser(directory_path)
     df = parser.process()
     
