@@ -24,14 +24,21 @@ def clean_tex_comments(content: str) -> str:
     Clean LaTeX content by removing comments and extra whitespace.
     Handles both line comments and inline comments.
     """
-    # First handle line continuations (lines ending with %)
-    content = re.sub(r'%\s*\n\s*', ' ', content)
     
     # Remove line comments (% to end of line, but not \% which is literal %)
     content = re.sub(r'(?<!\\)%.*?$', '', content, flags=re.MULTILINE)
+
+    # First handle line continuations (lines ending with %)
+    content = re.sub(r'%\s*\n\s*', ' ', content)
     
     # Clean up extra whitespace
     content = re.sub(r'\s+', ' ', content)
+
+    # Remove explicit comments i.e. content between \begin{comment} and \end{comment}
+    content = re.sub(r'\\begin{comment}.*?\\end{comment}', '', content, flags=re.DOTALL)
+
+    # Remove content between \iffalse and \fi
+    content = re.sub(r'\\iffalse.*?\\fi', '', content, flags=re.DOTALL)
     
     return content.strip()
 
@@ -148,7 +155,7 @@ class TexParser:
         self.section_positions = []
         
         # Look for sections and subsections
-        matched_sections = re.finditer(r'\\(section|subsection)\s*{', self.main_file_content)
+        matched_sections = re.finditer(r'\\(section|subsection)\*?\s*{', self.main_file_content)
         for match in matched_sections:
             position = match.start()
             section_type = match.group(1)  # Will be either "section" or "subsection"
@@ -207,6 +214,7 @@ class TexParser:
     def post_process_latex_content(self, content: str) -> str:
         content = self.extract_bracketed_content(content)
         content = content.strip()
+        content = re.sub(r'\\label{[^}]+}', '', content)
         content = self.resolve_commands(content, self.latex_commands)
         return self.clean_latex(content)
 
@@ -259,14 +267,19 @@ class TexParser:
         # First clean any comments from the entire table content
         cleaned_content = clean_tex_comments(table_content)
         
-        # Find caption command
-        caption_match = re.search(r'\\caption\s*{', cleaned_content)
-        if not caption_match:
+        # Extract all captions
+        caption_matches = list(re.finditer(r'\\caption\*?(?:of{[^}]+})?\s*{', cleaned_content))
+        if not caption_matches:
             return None
         
         # Extract content within caption braces, handling nested braces
-        start_pos = caption_match.end() - 1  # include the opening brace
-        return self.post_process_latex_content(cleaned_content[start_pos:])
+        cleaned_captions = []
+        for caption_match in caption_matches:
+            start_pos = caption_match.end() - 1  # include the opening brace
+            cleaned_caption = self.post_process_latex_content(cleaned_content[start_pos:])
+            cleaned_captions.append(cleaned_caption)
+
+        return cleaned_captions
 
     def analyze_table_content(self, table_content: str):
         """Analyze table content to extract structural and content information."""
@@ -371,44 +384,55 @@ class TexParser:
         tables = []
         paper_title = self.extract_metadata()
         
-        # Find all table environments
-        table_pattern = r'\\begin{table}.*?\\end{table}'
+        outer_match_pattern = r'\\begin{(?:table|figure)\*?}\s*(.*?)\\end{(?:table|figure)\*?}'
+        outer_matches = list(re.finditer(outer_match_pattern, self.main_file_content, re.DOTALL))
+        if not outer_matches:
+            return tables
         
-        for table_match in re.finditer(table_pattern, self.main_file_content, re.DOTALL):
-            table_content = table_match.group(0)
-            table_pos = table_match.start()
-            
-            # Extract and clean caption
-            caption = self.extract_caption(table_content)
+        for outer_match in outer_matches:
+            outer_content = outer_match.group(0)
+            outer_content_pos = outer_match.start()
 
-            # Analyze table content
-            max_cols, max_rows, cell_types = self.analyze_table_content(table_content)
-            
-            # Find current section using cached positions
-            section, subsection = self.find_section_for_position(table_pos)
-            
+            # Find all table environments
+            table_pattern = r'(\\begin{tabular}.*?\\end{tabular})'
+            tabular_matches = list(re.finditer(table_pattern, outer_content, re.DOTALL))
+            if not tabular_matches:
+                continue
+
+            # Extract and clean caption
+            captions = self.extract_caption(outer_content)
+
             # Find source file from markers
             source_file = "main.tex"
             marker_matches = list(re.finditer(
                 r'% BEGIN_INCLUDE_FROM: (.*?)\n',
-                self.main_file_content[:table_pos]
+                self.main_file_content[:outer_content_pos]
             ))
+
             if marker_matches:
                 source_file = marker_matches[-1].group(1)
-            
-            table = Table(
-                content=table_content,
-                caption=caption,
-                section=section,
-                subsection=subsection,
-                paper_id=self.paper_id,
-                paper_title=paper_title,
-                source_file=source_file,
-                max_cols=max_cols,
-                max_rows=max_rows,
-                cell_types=cell_types
-            )
-            tables.append(table)
+
+            # Find current section using cached positions
+            section, subsection = self.find_section_for_position(outer_content_pos)
+            for table_match in tabular_matches:
+                table_content = table_match.group(0)
+
+                # Analyze table content
+                max_cols, max_rows, cell_types = self.analyze_table_content(table_content)
+                
+                table = Table(
+                    content=table_content,
+                    caption=captions[-1] if captions else None,
+                    section=section,
+                    subsection=subsection,
+                    paper_id=self.paper_id,
+                    paper_title=paper_title,
+                    source_file=source_file,
+                    max_cols=max_cols,
+                    max_rows=max_rows,
+                    cell_types=cell_types
+                )
+                tables.append(table)
         
         return tables
 
@@ -432,8 +456,8 @@ class TexParser:
 
         df_data = []
         for i, table in enumerate(tables):
-            output_path = str(self.output_dir / f"table_{i}.png")
-            rendered = self.renderer.process_table(table.content, output_path)
+            output_path = str(self.output_dir / f"table_{i}.pdf")
+            #rendered = self.renderer.process_table(table.content, output_path)
 
             print(f"table paper_id: {table.paper_id}")
             print(f"table paper_title: {table.paper_title}")
@@ -452,60 +476,42 @@ class TexParser:
                 'section': table.section,
                 'subsection': table.subsection,
                 'table_content': table.content,
-                'cleaned_content': rendered.cleaned_content,
+                #'cleaned_content': rendered.cleaned_content,
                 'caption': table.caption,
                 'source_file': table.source_file,
                 'max_cols': table.max_cols,
                 'max_rows': table.max_rows,
                 'cell_types': table.cell_types,
-                'png_path': rendered.png_path,
-                'render_success': rendered.render_success
+                #'png_path': rendered.png_path,
+                #'pdf_path': rendered.pdf_path,
+                #'render_success': rendered.render_success
             })
         
         return pd.DataFrame(df_data)
-            
-        # Print table information
-        """for table in tables:
-            print(f"table paper_id: {table.paper_id}")
-            print(f"table paper_title: {table.paper_title}")
-            print(f"table section: {table.section}")
-            print(f"table subsection: {table.subsection}")
-            print(f"table caption: {table.caption}")
-            print(f"table source_file: {table.source_file}")
-            print(f"table max_cols: {table.max_cols}")
-            print(f"table max_rows: {table.max_rows}")
-            print(f"table cell_types: {table.cell_types}")
-            print("-" * 50)
-        
-        # Convert to DataFrame
-        df = pd.DataFrame([
-            {
-                'paper_id': table.paper_id,
-                'paper_title': table.paper_title,
-                'section': table.section,
-                'subsection': table.subsection,
-                'table_content': table.content,
-                'caption': table.caption,
-                'source_file': table.source_file,
-                'max_cols': table.max_cols,
-                'max_rows': table.max_rows,
-                'cell_types': table.cell_types
-            }
-            for table in tables
-        ])
-        
-        return df"""
+
+def main_single():
+    # Example usage
+    directory_path = "arxiv_sources/2401.00611v1"  # Example directory with extracted
+    subd = directory_path.split("/")[-1]
+    parser = TexParser(directory_path)
+    df = parser.process()
+    df.to_csv(f'{subd}_extracted_tables.csv', index=False)
+    print(f"Processed {len(df)} tables")
+    print(f"Output saved to {subd}_extracted_tables.csv")
 
 def main():
     # Example usage
-    directory_path = "arXiv-1709.02349v2"  # Example directory with extracted
-    parser = TexParser(directory_path)
-    df = parser.process()
-    
-    # Save to CSV
-    df.to_csv('extracted_tables.csv', index=False)
-    print(f"Processed {len(df)} tables")
-    print(f"Output saved to extracted_tables.csv")
+    directory_path = "arxiv_sources"  # Example directory with extracted
+    subdirectories = [d for d in os.listdir(directory_path) if os.path.isdir(os.path.join(directory_path, d))]
+    for subd in subdirectories:
+        print(f"Processing {subd}...")
+        parser = TexParser(os.path.join(directory_path, subd))
+        df = parser.process()
+        df.to_csv(f'{subd}_extracted_tables.csv', index=False)
+        print(f"Processed {len(df)} tables")
+        print(f"Output saved to {subd}_extracted_tables.csv")
+        print("=" * 50)
 
 if __name__ == "__main__":
     main()
+    # main_single()

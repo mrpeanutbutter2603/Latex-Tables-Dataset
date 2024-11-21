@@ -13,7 +13,8 @@ import os
 @dataclass
 class RenderedTable:
     cleaned_content: str
-    png_path: Optional[str]
+    # png_path: Optional[str]
+    pdf_path: Optional[str]
     render_success: bool
     error_message: Optional[str] = None
 
@@ -23,20 +24,19 @@ class TableRenderer:
         logging.basicConfig(level=logging.DEBUG)
         self.logger = logging.getLogger('TableRenderer')
         
-        self.latex_template = r"""
-\documentclass{article}
+        self.latex_header = r'''\documentclass{standalone}
 \usepackage{booktabs}
 \usepackage{array}
 \usepackage{multirow}
-\usepackage{colortbl}
+\usepackage{longtable}
 \usepackage{graphicx}
-\usepackage[active,tightpage]{preview}
-\PreviewEnvironment{tabular}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsbsy}
+\usepackage{amsthm}
+\begin{document}'''
 
-\begin{document}
-%s
-\end{document}
-"""
+        self.latex_footer = r'''\end{document}'''
         self._check_dependencies()
 
     def _check_dependencies(self) -> None:
@@ -78,99 +78,52 @@ class TableRenderer:
         # self.logger.debug(f"Cleaned table content: {tabular_content}")
         return tabular_content.strip()
 
-    def render_to_png(self, table_content: str, output_path: str) -> tuple[bool, Optional[str]]:
-        """Render LaTeX table to PNG using minimal LaTeX document."""
-        # Convert to absolute path
-        output_path = os.path.abspath(output_path)
-        # self.logger.debug(f"Starting render_to_png for output: {output_path}")
-        
-        # Ensure output directory exists with proper permissions
-        output_dir = Path(output_path).parent
+    def render_table_to_pdf(self, table_content, output_path):
         try:
+            output_dir = Path(output_path).parent
+            table_name = Path(output_path).stem
             output_dir.mkdir(parents=True, exist_ok=True)
-            # Ensure directory is writable
-            os.chmod(output_dir, 0o755)
-            # self.logger.debug(f"Created output directory: {output_dir}")
-        except Exception as e:
-            error_msg = f"Failed to create output directory: {str(e)}"
-            self.logger.error(error_msg)
-            return False, error_msg
-        
-        try:
+
             with tempfile.TemporaryDirectory() as tmp_dir:
-                tmp_path = Path(tmp_dir)
-                tex_file = tmp_path / "table.tex"
-                pdf_file = tmp_path / "table.pdf"
-                temp_png = tmp_path / "table.png"
+                tex_file = Path(tmp_dir) / "table.tex"
+                pdf_file = Path(tmp_dir) / table_name
+                latex_content = f"{self.latex_header}\n{table_content}\n{self.latex_footer}"
+                tex_file.write_text(latex_content)
                 
-                # Create complete LaTeX document
-                complete_doc = self.latex_template % table_content
-                tex_file.write_text(complete_doc)
+                try:
+                    result = subprocess.run(
+                        ["pdflatex", "-interaction=nonstopmode", tex_file.name],
+                        cwd=tmp_dir,
+                        capture_output=True,
+                        text=True,
+                        check=True
+                    )
+                except subprocess.TimeoutExpired:
+                    self.logger.error("pdflatex timed out")
+                    return False, "pdflatex timed out"
+                except subprocess.CalledProcessError as e:
+                    self.logger.error(f"pdflatex failed with code {e.returncode}")
+                    self.logger.error(f"pdflatex stderr:\n{e.stderr}")
+                    return False, f"pdflatex failed with code {e.returncode}"
                 
-                # self.logger.debug(f"Created tex file at: {tex_file}")
-                
-                # Run pdflatex
-                # self.logger.debug("Running pdflatex...")
-                process = subprocess.run(
-                    ["pdflatex", "-interaction=nonstopmode", tex_file.name],
-                    cwd=tmp_dir,
-                    capture_output=True,
-                    text=True,
-                    check=True
-                )
+                if result.returncode != 0:
+                    self.logger.error(f"pdflatex output:\nSTDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}")
+                    return False, f"pdflatex failed: {result.stdout}\n{result.stderr}"
                 
                 if not pdf_file.exists():
-                    error_msg = "PDF file was not created"
-                    self.logger.error(error_msg)
-                    return False, error_msg
+                    self.logger.error("pdflatex did not produce a PDF file")
+                    return False, "pdflatex did not produce a PDF file"
                 
-                # Fixed ImageMagick command
-                # self.logger.debug("Running magick with adjusted quality settings...")
-                process = subprocess.run(
-                    [
-                        "magick", "convert",  # Add convert command explicitly
-                        str(pdf_file),        # Input file first
-                        "-density", "150",
-                        "-trim",              # Remove extra white space
-                        "+repage",            # Reset page size
-                        "-background", "white",
-                        "-flatten",           # Flatten image
-                        "-quality", "100",    # High quality
-                        str(temp_png)         # Output file last
-                    ],
-                    cwd=tmp_dir,
-                    capture_output=True,
-                    text=True,
-                    check=True
-                )
+                # Move the generated PDF to the destination directory with the relevant name
+                shutil.move(str(pdf_file), str(output_dir))
                 
-                if not temp_png.exists():
-                    error_msg = "Temporary PNG file was not created"
-                    self.logger.error(error_msg)
-                    return False, error_msg
-                
-                # Copy the PNG to final destination
-                # self.logger.debug(f"Copying PNG to final destination: {output_path}")
-                shutil.copy2(temp_png, output_path)
-                
-                # Verify the output file was created
-                if not Path(output_path).exists():
-                    error_msg = f"Output file {output_path} was not created"
-                    self.logger.error(error_msg)
-                    return False, error_msg
-                
-                # self.logger.debug("Successfully created PNG file")
+                self.logger.info(f"PDF successfully generated and moved to {output_dir}")
                 return True, None
                 
-        except subprocess.CalledProcessError as e:
-            error_msg = f"Command failed:\nStdout: {e.stdout}\nStderr: {e.stderr}"
-            self.logger.error(error_msg)
-            return False, error_msg
         except Exception as e:
-            error_msg = f"Unexpected error: {str(e)}"
-            self.logger.error(error_msg)
-            return False, error_msg
-
+            self.logger.error(f"Error in render_table_to_pdf: {str(e)}", exc_info=True)
+            return False, str(e)
+    
     def process_table(self, table_content: str, output_path: str) -> RenderedTable:
         """Process table content and render to PNG."""
         # self.logger.info(f"Processing table for output: {output_path}")
@@ -186,7 +139,8 @@ class TableRenderer:
                 error_message=error_msg
             )
             
-        success, error_msg = self.render_to_png(cleaned_content, output_path)
+        # success, error_msg = self.render_to_png(cleaned_content, output_path)
+        success, error_msg = self.render_table_to_pdf(cleaned_content, output_path)
         
         if success:
             pass
@@ -196,7 +150,7 @@ class TableRenderer:
         
         return RenderedTable(
             cleaned_content=cleaned_content,
-            png_path=output_path if success else None,
+            pdf_path=output_path if success else None,
             render_success=success,
             error_message=error_msg
         )
