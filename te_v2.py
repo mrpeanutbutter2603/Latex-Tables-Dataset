@@ -491,13 +491,17 @@ class TexParser:
             print(f"Error processing file: {e}")
         return pd.DataFrame(df_data)
 
+OUTPUT_CSV_DIR = "output_csv_files"
+os.makedirs(OUTPUT_CSV_DIR, exist_ok=True)
+
 def main_single():
     # Example usage
     directory_path = "arxiv_sources/2401.00611v1"  # Example directory with extracted
     subd = directory_path.split("/")[-1]
     parser = TexParser(directory_path)
     df = parser.process()
-    df.to_csv(f'{subd}_extracted_tables.csv', index=False)
+    output_file = os.path.join(OUTPUT_CSV_DIR, f'{subd}_extracted_tables.csv')
+    df.to_csv(output_file, index=False)
     print(f"Processed {len(df)} tables")
     print(f"Output saved to {subd}_extracted_tables.csv")
 
@@ -509,7 +513,8 @@ def main():
         print(f"Processing {subd}...")
         parser = TexParser(os.path.join(directory_path, subd))
         df = parser.process()
-        df.to_csv(f'{subd}_extracted_tables.csv', index=False)
+        output_file = os.path.join(OUTPUT_CSV_DIR, f'{subd}_extracted_tables.csv')
+        df.to_csv(output_file, index=False)
         print(f"Processed {len(df)} tables")
         print(f"Output saved to {subd}_extracted_tables.csv")
         print("=" * 50)
