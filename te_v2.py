@@ -437,56 +437,58 @@ class TexParser:
         return tables
 
     def process(self) -> pd.DataFrame:
-        """Main processing function."""
-        # Find and read main file
-        main_file = self.find_main_tex_file()
-        if not main_file:
-            raise Exception("No main tex file found!")
-            
-        # Read and expand main file
-        with open(main_file, 'r', encoding='utf-8') as f:
-            content = f.read()
-            self.processed_files.add(main_file)
-            content = clean_tex_comments(content)
-            self.main_file_content = self.expand_includes(content, main_file)
-            self.latex_commands = self.extract_latex_commands(self.main_file_content)
-        
-        # Extract tables
-        tables = self.extract_tables()
-
         df_data = []
-        for i, table in enumerate(tables):
-            output_path = str(self.output_dir / f"table_{i}.pdf")
-            #rendered = self.renderer.process_table(table.content, output_path)
+        try:
+            """Main processing function."""
+            # Find and read main file
+            main_file = self.find_main_tex_file()
+            if not main_file:
+                raise Exception("No main tex file found!")
 
-            print(f"table paper_id: {table.paper_id}")
-            print(f"table paper_title: {table.paper_title}")
-            print(f"table section: {table.section}")
-            print(f"table subsection: {table.subsection}")
-            print(f"table caption: {table.caption}")
-            print(f"table source_file: {table.source_file}")
-            print(f"table max_cols: {table.max_cols}")
-            print(f"table max_rows: {table.max_rows}")
-            print(f"table cell_types: {table.cell_types}")
-            print("-" * 50)
+            # Read and expand main file
+            with open(main_file, 'r', encoding='utf-8') as f:
+                content = f.read()
+                self.processed_files.add(main_file)
+                content = clean_tex_comments(content)
+                self.main_file_content = self.expand_includes(content, main_file)
+                self.latex_commands = self.extract_latex_commands(self.main_file_content)
 
-            df_data.append({
-                'paper_id': table.paper_id,
-                'paper_title': table.paper_title,
-                'section': table.section,
-                'subsection': table.subsection,
-                'table_content': table.content,
-                #'cleaned_content': rendered.cleaned_content,
-                'caption': table.caption,
-                'source_file': table.source_file,
-                'max_cols': table.max_cols,
-                'max_rows': table.max_rows,
-                'cell_types': table.cell_types,
-                #'png_path': rendered.png_path,
-                #'pdf_path': rendered.pdf_path,
-                #'render_success': rendered.render_success
-            })
-        
+            # Extract tables
+            tables = self.extract_tables()
+
+            for i, table in enumerate(tables):
+                output_path = str(self.output_dir / f"table_{i}.pdf")
+                #rendered = self.renderer.process_table(table.content, output_path)
+
+                print(f"table paper_id: {table.paper_id}")
+                print(f"table paper_title: {table.paper_title}")
+                print(f"table section: {table.section}")
+                print(f"table subsection: {table.subsection}")
+                print(f"table caption: {table.caption}")
+                print(f"table source_file: {table.source_file}")
+                print(f"table max_cols: {table.max_cols}")
+                print(f"table max_rows: {table.max_rows}")
+                print(f"table cell_types: {table.cell_types}")
+                print("-" * 50)
+
+                df_data.append({
+                    'paper_id': table.paper_id,
+                    'paper_title': table.paper_title,
+                    'section': table.section,
+                    'subsection': table.subsection,
+                    'table_content': table.content,
+                    #'cleaned_content': rendered.cleaned_content,
+                    'caption': table.caption,
+                    'source_file': table.source_file,
+                    'max_cols': table.max_cols,
+                    'max_rows': table.max_rows,
+                    'cell_types': table.cell_types,
+                    #'png_path': rendered.png_path,
+                    #'pdf_path': rendered.pdf_path,
+                    #'render_success': rendered.render_success
+                })
+        except Exception as e:
+            print(f"Error processing file: {e}")
         return pd.DataFrame(df_data)
 
 def main_single():
