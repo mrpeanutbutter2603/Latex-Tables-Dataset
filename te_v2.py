@@ -621,9 +621,6 @@ class TexParser:
 
         df_data = []
         for i, table in enumerate(tables):
-            output_path = str(self.output_dir / f"table_{i}.pdf")
-            #rendered = self.renderer.process_table(table.content, output_path)
-
             print(f"table paper_id: {table.paper_id}")
             print(f"table paper_title: {table.paper_title}")
             print(f"table section: {table.section}")
@@ -690,7 +687,11 @@ def main_single(paper):
     subd = directory_path.split("/")[-1]
     parser = TexParser(directory_path)
     df = parser.process()
-    df.to_csv(f'{subd}_extracted_tables.csv', index=False)
+    OUTPUT_CSV_DIR = "output_csv_files"
+    if not os.path.exists(OUTPUT_CSV_DIR):
+        os.makedirs(OUTPUT_CSV_DIR)
+    output_file = os.path.join(OUTPUT_CSV_DIR, f'{subd}_extracted_tables.csv')
+    df.to_csv(output_file, index=False)
     print(f"Processed {len(df)} tables")
     print(f"Output saved to {subd}_extracted_tables.csv")
 
@@ -702,7 +703,11 @@ def main():
         print(f"Processing {subd}...")
         parser = TexParser(os.path.join(directory_path, subd))
         df = parser.process()
-        df.to_csv(f'{subd}_extracted_tables.csv', index=False)
+        OUTPUT_CSV_DIR = "output_csv_files"
+        if not os.path.exists(OUTPUT_CSV_DIR):
+            os.makedirs(OUTPUT_CSV_DIR)
+        output_file = os.path.join(OUTPUT_CSV_DIR, f'{subd}_extracted_tables.csv')
+        df.to_csv(output_file, index=False)
         print(f"Processed {len(df)} tables")
         print(f"Output saved to {subd}_extracted_tables.csv")
         print("=" * 50)
