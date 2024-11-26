@@ -77,7 +77,6 @@ class TexParser:
         for match in re.finditer(ref_pattern, self.main_file_content):
             label = match.group(1)
             ref_pos = match.start()
-            print(f"Found reference to {label} at position {ref_pos}")
             
             # Get section information
             section, subsection = self.find_section_for_position(ref_pos)
@@ -144,7 +143,12 @@ class TexParser:
         
         # Get paragraph text and split into sentences
         para_text = containing_paragraph.group()
-        
+
+        # Remove LaTeX environments
+        environments = ['table', 'figure', 'minipage']
+        for env in environments:
+            para_text = re.sub(rf'\\begin{{{env}\*?}}.*?\\end{{{env}\*?}}', '', para_text, flags=re.DOTALL)
+
         # Clean the paragraph text first
         para_text = clean_tex_comments(para_text)  # Remove LaTeX comments
         para_text = re.sub(r'\s+', ' ', para_text)  # Normalize whitespace
