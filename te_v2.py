@@ -71,7 +71,7 @@ class TexParser:
         Maps labels to lists of RefInfo objects containing reference information.
         """
         # Look for references to tables using various reference commands
-        ref_pattern = r'\\(?:c|tab)?ref{([^}]+)}'
+        ref_pattern = r'\\(?:auto|c|C|tab)?ref{([^}]+)}'
         
         # Find all references
         for match in re.finditer(ref_pattern, self.main_file_content):
@@ -260,12 +260,16 @@ class TexParser:
         commands = {}
         # Match commands with optional arguments and handle no-argument commands
         command_pattern = r'\\(?:newcommand|def|renewcommand){\\([^}]+)}(?:\[[\d]*\])?\s*{([^}]+)}'
-        
-        for match in re.finditer(command_pattern, content):
-            command_name = match.group(1)
-            command_value = match.group(2)
-            commands[command_name] = self.post_process_latex_content(command_value)
-        
+        matches = re.findall(command_pattern, content)
+        commands = {}
+        for match in matches:
+            command_name = match[0]
+            command_value = match[1]
+            command_value = re.sub(r'\\[a-zA-Z]+' , '', command_value)
+            command_value = command_value.replace('{', '').replace('}', '')
+            command_value = command_value.strip()
+            commands[command_name] = command_value
+
         return commands
 
     def build_section_cache(self):
@@ -544,12 +548,11 @@ class TexParser:
             section, subsection = self.find_section_for_position(outer_content_pos)
             for table_match in tabular_matches:
                 table_content = table_match.group(0)
-                table_start = table_match.start()
                 table_end = table_match.end()
 
                 # Extract and clean caption
                 # First check if the caption is before the tabular content
-                caption = self.extract_caption(outer_content[:table_start])
+                caption = self.extract_caption(outer_content[:table_end])
                 if caption:
                     caption = caption[-1]  # Use the last caption if multiple found
                 else:
@@ -563,7 +566,7 @@ class TexParser:
  
                 # Extract label
                 # First check if the label is before the tabular content
-                label = self.extract_label(outer_content[:table_start])
+                label = self.extract_label(outer_content[:table_end])
                 if label:
                     label = label[-1]
                 else:
@@ -644,22 +647,22 @@ class TexParser:
                 'subsection': table.subsection,
                 'table_content': table.content,
                 'caption': table.caption,
-                'source_file': table.source_file,
                 'max_cols': table.max_cols,
                 'max_rows': table.max_rows,
                 'cell_types': table.cell_types,
-                'label': table.label,
+                'context': []
             }
 
             # Add reference information
             if table.references:
+                context_list = []
+                for ref in table.references:
+                    curr_context = f"{ref[2]} {ref[3]} {ref[4]}"
+                    context_list.append(curr_context)
+
                 # Add all references as lists
                 table_data.update({
-                    'ref_sections': [ref[0] for ref in table.references],
-                    'ref_subsections': [ref[1] for ref in table.references],
-                    'ref_prev_sentences': [ref[2] for ref in table.references],
-                    'ref_current_sentences': [ref[3] for ref in table.references],
-                    'ref_next_sentences': [ref[4] for ref in table.references]
+                    'context': context_list
                 })
 
                 # Print the sentences for debugging
@@ -671,15 +674,6 @@ class TexParser:
                     print(f"Current: {ref[3]}")  # This should be the reference itself
                     print(f"Next: {ref[4]}")
                 print("=" * 50)
-            else:
-                # Empty lists if no references
-                table_data.update({
-                    'ref_sections': [],
-                    'ref_subsections': [],
-                    'ref_prev_sentences': [],
-                    'ref_current_sentences': [],
-                    'ref_next_sentences': []
-                })
             
             df_data.append(table_data)
         
@@ -703,10 +697,13 @@ def main():
     # Example usage
     directory_path = "arxiv_sources"  # Example directory with extracted
     subdirectories = [d for d in os.listdir(directory_path) if os.path.isdir(os.path.join(directory_path, d))]
+    all_dfs = []
     for subd in subdirectories:
         print(f"Processing {subd}...")
         parser = TexParser(os.path.join(directory_path, subd))
         df = parser.process()
+        if not df.empty:
+            all_dfs.append(df)
         OUTPUT_CSV_DIR = "output_csv_files"
         if not os.path.exists(OUTPUT_CSV_DIR):
             os.makedirs(OUTPUT_CSV_DIR)
@@ -715,6 +712,11 @@ def main():
         print(f"Processed {len(df)} tables")
         print(f"Output saved to {subd}_extracted_tables.csv")
         print("=" * 50)
+
+    final_df = pd.concat(all_dfs, axis=0)
+    output_file = os.path.join(OUTPUT_CSV_DIR, f'all_extracted_tables.xlsx')
+    final_df.to_excel(output_file, index=False)
+    print(f"Output saved to {output_file}")
 
 if __name__ == "__main__":
     # Whether we want to run a single instance or all should be decide from the command
