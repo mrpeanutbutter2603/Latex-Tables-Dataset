@@ -129,7 +129,7 @@ class TexParser:
         
         # Get the paragraph containing the reference
         # Look for double newlines or section commands to identify paragraph boundaries
-        paragraph_pattern = r'(?:(?!\n\n|\\(?:sub)*section).)+(?:\n(?!\n|\\(?:sub)*section).+)*'
+        paragraph_pattern = r'(?:(?!\n\n|\\(?:sub)*section\*?).)+(?:\n(?!\n|\\(?:sub)*section\*?).+)*'
         paragraph_matches = list(re.finditer(paragraph_pattern, text))
         
         containing_paragraph = None
@@ -147,7 +147,12 @@ class TexParser:
         # Remove LaTeX environments
         environments = ['table', 'figure', 'minipage']
         for env in environments:
+            # Remove \begin{env}...\end{env} and \begin{env*}...\end{env*}
             para_text = re.sub(rf'\\begin{{{env}\*?}}.*?\\end{{{env}\*?}}', '', para_text, flags=re.DOTALL)
+
+         # Remove all sectioning commands like \section, \subsection, \subsubsection, etc.
+        para_text = re.sub(r'\\(?:sub)*section\*?{[^}]*}', '', para_text)
+        para_text = re.sub(r'(?:sub)*section\*?{[^}]*}', '', para_text)
 
         # Clean the paragraph text first
         para_text = clean_tex_comments(para_text)  # Remove LaTeX comments
@@ -170,6 +175,7 @@ class TexParser:
         prev_sentence = sentences[current_idx - 1] if current_idx > 0 else ""
         next_sentence = sentences[current_idx + 1] if current_idx < len(sentences) - 1 else ""
         
+
         # Clean the extracted sentences
         current_sentence = self.clean_latex(current_sentence)
         prev_sentence = self.clean_latex(prev_sentence)
@@ -353,6 +359,8 @@ class TexParser:
         # Remove common LaTeX formatting commands
         text = re.sub(r'\\[a-zA-Z]+{([^}]*)}', r'\1', text)
         text = re.sub(r'\\[a-zA-Z]+', '', text)
+        # Remove dollar signs
+        text = re.sub(r'\$', '', text)
         # Remove extra spaces and newlines
         text = re.sub(r'\s+', ' ', text)
         return text.strip()
@@ -698,12 +706,15 @@ def main():
     directory_path = "arxiv_sources"  # Example directory with extracted
     subdirectories = [d for d in os.listdir(directory_path) if os.path.isdir(os.path.join(directory_path, d))]
     all_dfs = []
+    empty_dfs = 0
     for subd in subdirectories:
         print(f"Processing {subd}...")
         parser = TexParser(os.path.join(directory_path, subd))
         df = parser.process()
         if not df.empty:
             all_dfs.append(df)
+        else:
+            empty_dfs += 1
         OUTPUT_CSV_DIR = "output_csv_files"
         if not os.path.exists(OUTPUT_CSV_DIR):
             os.makedirs(OUTPUT_CSV_DIR)
@@ -717,6 +728,7 @@ def main():
     output_file = os.path.join(OUTPUT_CSV_DIR, f'all_extracted_tables.xlsx')
     final_df.to_excel(output_file, index=False)
     print(f"Output saved to {output_file}")
+    print(f"Processed {len(subdirectories)}, {empty_dfs} directories had no tables")
 
 if __name__ == "__main__":
     # Whether we want to run a single instance or all should be decide from the command

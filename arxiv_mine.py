@@ -181,22 +181,22 @@ class ArxivClient:
                     tar.extractall(path)
                 
                 safe_extract(tar, extract_dir)
-            
+
             os.remove(temp_file)
             
             files = os.listdir(extract_dir)
             tex_files = [f for f in files if f.endswith('.tex')]
 
-            # Check for main.tex
-            if 'main.tex' not in tex_files:
-                print(f"main.tex not found in {extract_dir}. Deleting directory.")
+            # Check for .tex files within the extract_dir, if none found, delete the directory
+            if not tex_files:
+                print(f"No .tex files found in {extract_dir}. Deleting directory.")
                 for root, dirs, files in os.walk(extract_dir, topdown=False):
                     for name in files:
                         os.remove(os.path.join(root, name))
                     for name in dirs:
                         os.rmdir(os.path.join(root, name))
                 os.rmdir(extract_dir)
-                return False, f"main.tex not found. Directory deleted."
+                return False, f"No .tex files found. Directory deleted."
 
             return True, {
                 'extract_dir': extract_dir,
