@@ -53,7 +53,7 @@ class TexParser:
         self.processed_files = set()
         self.section_positions = []
         self.latex_commands = {}
-        
+
         # Create output directory with proper permissions
         self.output_dir = self.directory / "rendered_tables"
         try:
@@ -64,6 +64,8 @@ class TexParser:
         
         # self.renderer = TableRenderer()
         self.label_refs = {}  # Dictionary to store all references: label -> List[RefInfo]
+        self.total_papers = 0  # Total papers processed
+        self.nested_tabular_papers = 0  # Count of papers with nested tabular environments
 
     def build_reference_dictionary(self):
         """
@@ -519,6 +521,23 @@ class TexParser:
                     return 'text'
                 return 'categorical'
 
+    def has_nested_tabular(self, content: str) -> bool:
+        """
+        Check if the content has nested tabular environments.
+        """
+        tabular_stack = []
+        tabular_pattern = re.compile(r'\\begin{tabular}|\\end{tabular}')
+        for match in tabular_pattern.finditer(content):
+            if match.group() == r'\begin{tabular}':
+                tabular_stack.append(match.start())
+            elif match.group() == r'\end{tabular}':
+                if not tabular_stack:
+                    return False  # Unmatched \end{tabular}
+                tabular_stack.pop()
+            if len(tabular_stack) > 1:
+                return True  # Nested \begin{tabular} found
+        return False
+
     def extract_tables(self) -> List[Table]:
         """Extract all tables from the expanded content."""
         # Build section cache once
@@ -542,6 +561,12 @@ class TexParser:
             if not tabular_matches:
                 continue
 
+            # Check for nested tabular environments
+            if self.has_nested_tabular(outer_content):
+                print(f"Warning: Nested tabular environments found in {paper_title}")
+                self.nested_tabular_papers += 1
+                return pd.DataFrame()
+        
             # Find source file from markers
             source_file = "main.tex"
             marker_matches = list(re.finditer(
@@ -623,6 +648,7 @@ class TexParser:
             print("No main tex file found!")
             return pd.DataFrame()
             
+        self.total_papers += 1
         # Read and expand main file
         with open(main_file, 'r', encoding='utf-8') as f:
             content = f.read()
@@ -700,6 +726,8 @@ def main_single(paper):
     df.to_csv(output_file, index=False)
     print(f"Processed {len(df)} tables")
     print(f"Output saved to {subd}_extracted_tables.csv")
+    if parser.nested_tabular_papers > 0:
+        print(f"Nested tabular environment found!")
 
 def main():
     # Example usage
@@ -707,6 +735,8 @@ def main():
     subdirectories = [d for d in os.listdir(directory_path) if os.path.isdir(os.path.join(directory_path, d))]
     all_dfs = []
     empty_dfs = 0
+    total_papers = 0
+    total_nested_tabular_papers = 0
     for subd in subdirectories:
         print(f"Processing {subd}...")
         parser = TexParser(os.path.join(directory_path, subd))
@@ -720,6 +750,8 @@ def main():
             os.makedirs(OUTPUT_CSV_DIR)
         output_file = os.path.join(OUTPUT_CSV_DIR, f'{subd}_extracted_tables.csv')
         df.to_csv(output_file, index=False)
+        total_papers += parser.total_papers
+        total_nested_tabular_papers += parser.nested_tabular_papers
         print(f"Processed {len(df)} tables")
         print(f"Output saved to {subd}_extracted_tables.csv")
         print("=" * 50)
@@ -729,6 +761,9 @@ def main():
     final_df.to_excel(output_file, index=False)
     print(f"Output saved to {output_file}")
     print(f"Processed {len(subdirectories)}, {empty_dfs} directories had no tables")
+    percent_nested_tabular = (total_nested_tabular_papers / total_papers) * 100 if total_papers > 0 else 0
+    print(f"Total papers processed: {total_papers}")
+    print(f"Total papers with nested tabular environments: {total_nested_tabular_papers} ({percent_nested_tabular:.2f}%)")
 
 if __name__ == "__main__":
     # Whether we want to run a single instance or all should be decide from the command
