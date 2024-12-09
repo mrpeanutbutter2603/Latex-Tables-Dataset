@@ -3,9 +3,13 @@ import re
 from pathlib import Path
 from table_renderer import TableRenderer
 from dataclasses import dataclass
-from typing import List, Optional, Dict, Set
+from typing import List, Optional, Dict, Set, Tuple
 import pandas as pd
 import argparse
+from multiprocessing import Pool, cpu_count, Manager
+from functools import partial
+import requests
+import xml.etree.ElementTree as ET
 
 @dataclass
 class Table:
@@ -15,6 +19,7 @@ class Table:
     subsection: Optional[str]
     paper_id: str
     paper_title: str
+    paper_categories: List[str]
     source_file: str
     max_cols: int
     max_rows: int
@@ -44,6 +49,26 @@ def clean_tex_comments(content: str) -> str:
     content = re.sub(r'\\iffalse.*?\\fi', '', content, flags=re.DOTALL)
     
     return content.strip()
+
+def query_arxiv_api(arxiv_id: str) -> Tuple[str, List[str]]:
+    """Query the arXiv API to get the paper title and categories."""
+    url = f"http://export.arxiv.org/api/query?id_list={arxiv_id}"
+    response = requests.get(url)
+    if response.status_code == 200:
+        root = ET.fromstring(response.content)
+        ns = {'atom': 'http://www.w3.org/2005/Atom', 'arxiv': 'http://arxiv.org/schemas/atom'}
+        
+        entry = root.find('atom:entry', ns)
+        if entry is not None:
+            title = entry.find('atom:title', ns).text.strip()
+            categories = [cat.get('term') for cat in entry.findall('atom:category', ns)]
+            return title, categories
+        else:
+            print(f"No entry found for arXiv ID: {arxiv_id}")
+            return "Unknown Title", []
+    else:
+        print(f"Error querying arXiv API: {response.status_code}")
+        return "Unknown Title", []
 
 class TexParser:
     def __init__(self, directory_path: str):
@@ -250,6 +275,7 @@ class TexParser:
 
     def extract_metadata(self) -> tuple[str, List[str]]:
         """Extract paper title and authors from the expanded content."""
+        """
         # Clean the content first (remove comments, extra whitespace)
         cleaned_content = clean_tex_comments(self.main_file_content)
         
@@ -260,8 +286,10 @@ class TexParser:
             paper_title = self.post_process_latex_content(cleaned_content[start_pos:])
         else:
             paper_title = "Unknown Title"
-            
-        return paper_title
+        """
+
+        paper_title, categories = query_arxiv_api(self.paper_id)
+        return paper_title, categories
 
     def extract_latex_commands(self, content: str) -> dict:
         """Extract LaTeX command definitions into a dictionary."""
@@ -297,7 +325,6 @@ class TexParser:
             self.section_positions.append((position, section_type, section_name))
         
         # Sort by position
-        # print(self.section_positions)
         self.section_positions.sort()
 
     def extract_bracketed_content(self, content: str, depth: int = 1) -> str:
@@ -426,34 +453,44 @@ class TexParser:
 
         return cleaned_captions
 
-    def analyze_table_content(self, table_content: str):
+    def analyze_table_content(self, tabular_content: str):
         """Analyze table content to extract structural and content information."""
-        # Extract the tabular environment
-        tabular_match = re.search(r'\\begin{tabular}.*?\\end{tabular}', table_content, re.DOTALL)
-        if not tabular_match:
-            return None, None, None
-        
-        tabular_content = tabular_match.group(0)
-        
-        # Get row data
-        rows = re.split(r'\\\\', tabular_content)
-        rows = [row.strip() for row in rows if row.strip()]
-        
-        max_rows = len(rows)
+
+        # Find all \begin{tabular} and \end{tabular} positions
+        begin_tabular_positions = [m.start() for m in re.finditer(r'\\begin{tabular\*?}', tabular_content)]
+        end_tabular_positions = [m.end() for m in re.finditer(r'\\end{tabular\*?}', tabular_content)]
+
+        # Keep the first \begin{tabular} and the last \end{tabular}
+        first_begin = begin_tabular_positions[0]
+        last_end = end_tabular_positions[-1]
+
+        # Substitute all other \begin{tabular} and \end{tabular} with a placeholder
+        placeholder = "TABLE_PLACEHOLDER"
+        tabular_content = (
+            tabular_content[:first_begin + len(r'\begin{tabular}')] +
+            re.sub(r'\\begin{tabular\*?}.*?\\end{tabular\*?}', placeholder, tabular_content[first_begin + len(r'\begin{tabular}'):last_end], flags=re.DOTALL) +
+            tabular_content[last_end:]
+        )
+
+        # Split into rows by main row delimiters
+        rows = re.split(r'\\\\', tabular_content)  # Split LaTeX rows ending with \\
+        rows = [row.strip() for row in rows if row.strip()]  # Remove empty rows
+
+        max_rows = max(len(rows) - 1, 1)
         max_cols = 0
         cell_types = set()
-        
+
         for row in rows:
             # Split by & to get cells
-            cells = re.split(r'&', row)
+            cells = re.split(r'&', row)  # Cells are separated by &
             cells = [self.clean_cell_content(cell.strip()) for cell in cells if cell.strip()]
-            max_cols = max(max_cols, len(cells))
-            
+            max_cols = max(max_cols, len(cells))  # Update maximum columns in any row
+
             # Analyze cell types
             for cell in cells:
                 cell_type = self.determine_cell_type(cell)
                 cell_types.add(cell_type)
-        
+
         return max_cols, max_rows, cell_types
 
     def clean_cell_content(self, cell: str) -> str:
@@ -470,10 +507,14 @@ class TexParser:
         """
         # Clean the cell content first
         cell = cell.strip()
-        
+            
         if not cell:
             return 'empty'
-            
+        
+        # Check for TABLE_PLACEHOLDER
+        if "TABLE_PLACEHOLDER" in cell:
+            return 'table'
+
         # Check for numeric types with units
         if re.match(r'^-?\d+\.?\d*\s*[a-zA-Z%]+$', cell):
             return 'measurement'
@@ -505,7 +546,7 @@ class TexParser:
         # Check for boolean values
         if cell.lower() in ['true', 'false', 'yes', 'no', '✓', '✗', '×']:
             return 'boolean'
-            
+
         # Check for integers
         try:
             int(cell)
@@ -521,16 +562,42 @@ class TexParser:
                     return 'text'
                 return 'categorical'
 
+    def extract_tabular_content(self, content: str) -> list:
+        """
+        Extract all tabular environments, including nested ones.
+        """
+        tabular_stack = []
+        tabular_pattern = re.compile(r'\\begin{tabular\*?}|\\end{tabular\*?}')
+        tabular_contents = []
+        current_content = []
+        for match in tabular_pattern.finditer(content):
+            if re.match(r'\\begin{tabular\*?}', match.group()):
+                if tabular_stack:
+                    current_content.append(match.group())
+                tabular_stack.append(match.start())
+            elif re.match(r'\\end{tabular\*?}', match.group()):
+                if not tabular_stack:
+                    continue  # Unmatched \end{tabular}
+                start_pos = tabular_stack.pop()
+                if not tabular_stack:
+                    # Top-level tabular environment
+                    tabular_contents.append(content[start_pos:match.end()])
+                else:
+                    current_content.append(match.group())
+            if tabular_stack:
+                current_content.append(content[match.start():match.end()])
+        return tabular_contents
+
     def has_nested_tabular(self, content: str) -> bool:
         """
         Check if the content has nested tabular environments.
         """
         tabular_stack = []
-        tabular_pattern = re.compile(r'\\begin{tabular}|\\end{tabular}')
+        tabular_pattern = re.compile(r'\\begin{tabular\*?}|\\end{tabular\*?}')
         for match in tabular_pattern.finditer(content):
-            if match.group() == r'\begin{tabular}':
+            if re.match(r'\\begin{tabular\*?}', match.group()):
                 tabular_stack.append(match.start())
-            elif match.group() == r'\end{tabular}':
+            elif re.match(r'\\end{tabular\*?}', match.group()):
                 if not tabular_stack:
                     return False  # Unmatched \end{tabular}
                 tabular_stack.pop()
@@ -544,7 +611,7 @@ class TexParser:
         self.build_section_cache()
         
         tables = []
-        paper_title = self.extract_metadata()
+        paper_title, categories = self.extract_metadata()
         
         outer_match_pattern = r'\\begin{(?:table|figure)\*?}\s*(.*?)\\end{(?:table|figure)\*?}'
         outer_matches = list(re.finditer(outer_match_pattern, self.main_file_content, re.DOTALL))
@@ -555,17 +622,25 @@ class TexParser:
             outer_content = outer_match.group(0)
             outer_content_pos = outer_match.start()
 
+            ''''
             # Find all table environments
             table_pattern = r'(\\begin{tabular}.*?\\end{tabular})'
             tabular_matches = list(re.finditer(table_pattern, outer_content, re.DOTALL))
             if not tabular_matches:
                 continue
+            '''
 
+            # Extract all tabular environments
+            tabular_contents = self.extract_tabular_content(outer_content)
+            if not tabular_contents:
+                continue
+                
             # Check for nested tabular environments
             if self.has_nested_tabular(outer_content):
                 print(f"Warning: Nested tabular environments found in {paper_title}")
-                self.nested_tabular_papers += 1
-                return pd.DataFrame()
+                if self.nested_tabular_papers == 0:
+                    self.nested_tabular_papers += 1
+            #    return pd.DataFrame()
         
             # Find source file from markers
             source_file = "main.tex"
@@ -579,9 +654,8 @@ class TexParser:
 
             # Find current section using cached positions
             section, subsection = self.find_section_for_position(outer_content_pos)
-            for table_match in tabular_matches:
-                table_content = table_match.group(0)
-                table_end = table_match.end()
+            for table_content in tabular_contents:
+                table_end = outer_content.find(table_content) + len(table_content)
 
                 # Extract and clean caption
                 # First check if the caption is before the tabular content
@@ -627,6 +701,7 @@ class TexParser:
                     subsection=subsection,
                     paper_id=self.paper_id,
                     paper_title=paper_title,
+                    paper_categories=categories,
                     source_file=source_file,
                     max_cols=max_cols,
                     max_rows=max_rows,
@@ -662,21 +737,10 @@ class TexParser:
 
         df_data = []
         for i, table in enumerate(tables):
-            print(f"table paper_id: {table.paper_id}")
-            print(f"table paper_title: {table.paper_title}")
-            print(f"table section: {table.section}")
-            print(f"table subsection: {table.subsection}")
-            print(f"table caption: {table.caption}")
-            print(f"table source_file: {table.source_file}")
-            print(f"table max_cols: {table.max_cols}")
-            print(f"table max_rows: {table.max_rows}")
-            print(f"table cell_types: {table.cell_types}")
-            print(f"table label: {table.label}")
-            print("-" * 50)
-
             table_data = {
                 'paper_id': table.paper_id,
                 'paper_title': table.paper_title,
+                'paper_categories': table.paper_categories,
                 'section': table.section,
                 'subsection': table.subsection,
                 'table_content': table.content,
@@ -689,10 +753,12 @@ class TexParser:
 
             # Add reference information
             if table.references:
-                context_list = []
+                context_set = set()
                 for ref in table.references:
                     curr_context = f"{ref[2]} {ref[3]} {ref[4]}"
-                    context_list.append(curr_context)
+                    context_set.add(curr_context)
+
+                context_list = list(context_set)
 
                 # Add all references as lists
                 table_data.update({
@@ -700,6 +766,7 @@ class TexParser:
                 })
 
                 # Print the sentences for debugging
+                """
                 print("Reference sentences:")
                 for ref in table.references:
                     print(f"Section: {ref[0]}")
@@ -708,7 +775,23 @@ class TexParser:
                     print(f"Current: {ref[3]}")  # This should be the reference itself
                     print(f"Next: {ref[4]}")
                 print("=" * 50)
-            
+                """
+
+            print(f"table paper_id: {table.paper_id}")
+            print(f"table paper_title: {table.paper_title}")
+            print(f"table paper_categories: {table.paper_categories}")
+            print(f"table section: {table.section}")
+            print(f"table subsection: {table.subsection}")
+            print(f"table caption: {table.caption}")
+            print(f"table source_file: {table.source_file}")
+            print(f"table max_cols: {table.max_cols}")
+            print(f"table max_rows: {table.max_rows}")
+            print(f"table cell_types: {table.cell_types}")
+            print(f"table label: {table.label}")
+            print(f"table context:")
+            for i, context in enumerate(table_data['context']):
+                print(f"{i + 1} --> {context}")
+            print("-" * 50)
             df_data.append(table_data)
         
         return pd.DataFrame(df_data)
@@ -729,6 +812,101 @@ def main_single(paper):
     if parser.nested_tabular_papers > 0:
         print(f"Nested tabular environment found!")
 
+def process_paper(paper_dir, base_dir, shared_stats):
+    """Process a single paper directory."""
+    try:
+        directory_path = os.path.join(base_dir, paper_dir)
+        parser = TexParser(directory_path)
+        df = parser.process()
+        
+        # Update shared statistics
+        if not df.empty:
+            with shared_stats['lock']:
+                shared_stats['processed_papers'].value += parser.total_papers
+                shared_stats['nested_papers'].value += parser.nested_tabular_papers
+        
+        # Save individual paper results
+        OUTPUT_CSV_DIR = "output_csv_files"
+        if not os.path.exists(OUTPUT_CSV_DIR):
+            os.makedirs(OUTPUT_CSV_DIR)
+        output_file = os.path.join(OUTPUT_CSV_DIR, f'{paper_dir}_extracted_tables.csv')
+        df.to_csv(output_file, index=False)
+        
+        return df if not df.empty else None
+        
+    except Exception as e:
+        print(f"Error processing {paper_dir}: {e}")
+        return None
+
+def main(num_threads=None):
+    """Main processing function with parallel execution."""
+    if num_threads is None:
+        num_threads = cpu_count()  # Use all available CPU cores by default
+    
+    directory_path = "arxiv_sources"
+    subdirectories = [d for d in os.listdir(directory_path) 
+                     if os.path.isdir(os.path.join(directory_path, d))]
+    
+    # Set up shared statistics using Manager
+    manager = Manager()
+    shared_stats = {
+        'processed_papers': manager.Value('i', 0),
+        'nested_papers': manager.Value('i', 0),
+        'lock': manager.Lock()
+    }
+    
+    # Create partial function with fixed arguments
+    process_func = partial(process_paper, 
+                         base_dir=directory_path, 
+                         shared_stats=shared_stats)
+    
+    # Process papers in parallel
+    with Pool(processes=num_threads) as pool:
+        all_dfs = pool.map(process_func, subdirectories)
+    
+    # Filter out None results and combine DataFrames
+    valid_dfs = [df for df in all_dfs if df is not None]
+    if valid_dfs:
+        final_df = pd.concat(valid_dfs, axis=0)
+        
+        # Save combined results
+        output_file = os.path.join("output_csv_files", 'all_extracted_tables.xlsx')
+        final_df.to_excel(output_file, index=False)
+        
+        # Print statistics
+        empty_dfs = len(subdirectories) - len(valid_dfs)
+        percent_nested = ((shared_stats['nested_papers'].value / 
+                          shared_stats['processed_papers'].value) * 100 
+                         if shared_stats['processed_papers'].value > 0 else 0)
+        
+        print(f"Output saved to {output_file}")
+        print(f"Processed {len(subdirectories)} directories, {empty_dfs} had no tables")
+        print(f"Total papers processed: {shared_stats['processed_papers'].value}")
+        print(f"Papers with nested tabular environments: "
+              f"{shared_stats['nested_papers'].value} ({percent_nested:.2f}%)")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--single", action="store_true", 
+                       help="Run for a single directory")
+    parser.add_argument("--paper", type=str, 
+                       help="Run for a single paper")
+    parser.add_argument("--threads", type=int, 
+                       help="Number of parallel threads to use")
+    args = parser.parse_args()
+    
+    if args.single:
+        if not args.paper:
+            print("Please provide the paper name")
+            exit(1)
+        main_single(args.paper)
+    else:
+        main(num_threads=args.threads)
+
+
+
+
+""""
 def main():
     # Example usage
     directory_path = "arxiv_sources"  # Example directory with extracted
@@ -781,3 +959,4 @@ if __name__ == "__main__":
         main_single(args.paper)
     else:
         main()
+"""
