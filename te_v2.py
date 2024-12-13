@@ -1,3 +1,6 @@
+import time
+start_time = time.perf_counter()
+
 import os
 import re
 from pathlib import Path
@@ -903,6 +906,9 @@ if __name__ == "__main__":
     else:
         main(num_threads=args.threads)
 
+end_time = time.perf_counter()
+elapsed_time = end_time - start_time
+print(f"Total elapsed time: {elapsed_time:.2f} seconds")
 
 
 
