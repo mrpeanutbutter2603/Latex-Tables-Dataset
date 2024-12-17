@@ -87,7 +87,7 @@ class TexParser:
         except Exception as e:
             print(f"Warning: Failed to create output directory: {e}")
         
-        # self.renderer = TableRenderer()
+        self.renderer = TableRenderer()
         self.label_refs = {}  # Dictionary to store all references: label -> List[RefInfo]
         self.total_papers = 0  # Total papers processed
         self.nested_tabular_papers = 0  # Count of papers with nested tabular environments
@@ -750,6 +750,9 @@ class TexParser:
                 'cell_types': table.cell_types,
                 'context': []
             }
+
+            table_pdf_path = self.output_dir / f"{table.paper_id}_{i}.pdf"
+            self.renderer.process_table(table.content, table_pdf_path)
 
             # Add reference information
             if table.references:
